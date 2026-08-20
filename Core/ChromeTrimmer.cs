@@ -34,6 +34,12 @@ public sealed class ChromeTrimmer(AppSettings settings)
         "shared_worker",
         "service_worker",
         "background_page",
+
+        // Chrome's own WebUI surfaces - the profile picker, tab search, the new tab page - run in
+        // renderers with their own V8 heaps. Attaching is refused often enough that the failures are
+        // counted rather than treated as errors.
+        "browser_ui",
+        "other",
     ];
 
     /// <summary>
