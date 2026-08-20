@@ -14,6 +14,18 @@ public sealed class AppSettings
     /// <summary>Port passed to Chrome as --remote-debugging-port.</summary>
     public int DebuggingPort { get; set; } = 9222;
 
+    /// <summary>
+    /// Profile directory passed as --user-data-dir. Empty means Chrome's default profile path, which
+    /// still has to be stated explicitly: since Chrome 136 the debugging endpoint is refused when the
+    /// switch is missing from the command line.
+    /// </summary>
+    public string UserDataDirectory { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string EffectiveUserDataDirectory => string.IsNullOrWhiteSpace(UserDataDirectory)
+        ? ChromeLocator.DefaultUserDataDirectory
+        : UserDataDirectory;
+
     /// <summary>Run the aggressive V8 purge after the garbage collection pass.</summary>
     public bool PurgeJavaScriptMemory { get; set; } = true;
 

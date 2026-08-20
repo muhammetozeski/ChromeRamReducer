@@ -84,17 +84,23 @@ scripts keep running.
 ## Enabling the DevTools endpoint
 
 V8's garbage collector cannot be reached from outside the browser process by any other means, so
-Chrome has to expose its debugging endpoint:
+Chrome has to expose its debugging endpoint. Two switches are needed, not one:
 
 ```text
-chrome.exe --remote-debugging-port=9222
+chrome.exe --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\Google\Chrome\User Data"
 ```
 
-Chrome ignores the flag while another instance already owns the profile, so every Chrome window has
-to be closed first. The application's **Start Chrome with debugging** button does this for you and
-adds `--restore-last-session`.
+Since Chrome 136 the endpoint is silently refused unless `--user-data-dir` appears on the command
+line. The check is on the switch being present, not on where it points, so naming the default profile
+path explicitly satisfies it and your usual bookmarks, logins and extensions are still loaded. With
+`--remote-debugging-port` alone Chrome starts normally, opens no port and reports nothing.
 
-To make it permanent, append the flag to the target of your Chrome shortcut.
+Chrome also ignores both switches while another instance already owns the profile, so every Chrome
+window has to be closed first. The application's **Enable debugging** button handles the whole
+sequence: it asks the windows to close, waits for the profile to be released, restarts Chrome with
+both switches plus `--restore-last-session`, and polls until the endpoint answers.
+
+To make it permanent, append both switches to the target of your Chrome shortcut.
 
 ### Security architecture
 

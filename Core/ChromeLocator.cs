@@ -94,7 +94,7 @@ public static class ChromeLocator
 
         List<int> candidates = [];
 
-        if (ReadDevToolsActivePort(DefaultUserDataDirectory) is int active)
+        if (ReadDevToolsActivePort(settings.EffectiveUserDataDirectory) is int active)
         {
             candidates.Add(active);
         }
@@ -143,10 +143,21 @@ public static class ChromeLocator
     /// Starts Chrome with the debugging endpoint enabled. Chrome ignores the flag when another
     /// instance already owns the profile, so the caller must make sure Chrome is closed first.
     /// </summary>
-    public static void LaunchWithDebugging(int port)
+    /// <param name="port">Value for --remote-debugging-port.</param>
+    /// <param name="userDataDirectory">
+    /// Profile directory to pass as --user-data-dir. Since Chrome 136 the debugging endpoint is
+    /// refused unless this switch is present on the command line, even when the value it carries is
+    /// the default profile path, so it is always supplied. Passing the default path keeps the user's
+    /// real bookmarks, logins and extensions.
+    /// </param>
+    public static void LaunchWithDebugging(int port, string? userDataDirectory = null)
     {
         string? executable = FindExecutable()
             ?? throw new FileNotFoundException("chrome.exe was not found in any of the usual install locations.");
+
+        string profile = string.IsNullOrWhiteSpace(userDataDirectory)
+            ? DefaultUserDataDirectory
+            : userDataDirectory;
 
         ProcessStartInfo startInfo = new(executable)
         {
@@ -154,9 +165,12 @@ public static class ChromeLocator
         };
 
         startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
+        startInfo.ArgumentList.Add($"--user-data-dir={profile}");
         startInfo.ArgumentList.Add("--restore-last-session");
 
-        Log($"Starting: \"{executable}\" --remote-debugging-port={port} --restore-last-session", LogLevel.Info);
+        Log($"Starting: \"{executable}\" --remote-debugging-port={port} "
+            + $"--user-data-dir=\"{profile}\" --restore-last-session", LogLevel.Info);
+
         Process.Start(startInfo);
     }
 
