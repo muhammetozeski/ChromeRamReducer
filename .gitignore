@@ -1,0 +1,25 @@
+## Build output
+bin/
+obj/
+publish/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Publish helpers
+*.publishsettings
+PublishProfiles/
+
+## OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
+
+## Local artefacts
+*.log
