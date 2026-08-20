@@ -287,7 +287,7 @@ public sealed class MainForm : Form
         _enableButton.Click += async (_, _) =>
         {
             Log("Button clicked: Enable debugging.", LogLevel.Info);
-            await EnableDebuggingAsync();
+            await EnableDebuggingAsync(alreadyConfirmed: false);
         };
 
         _logFolderButton.Text = "Open logs";
@@ -568,28 +568,31 @@ public sealed class MainForm : Form
             LogLevel.Info);
     }
 
-    private async Task EnableDebuggingAsync()
+    private async Task EnableDebuggingAsync(bool alreadyConfirmed = false)
     {
         int running = ChromeLocator.CountChromeProcesses();
 
-        string question = running > 0
-            ? $"Chrome is running with {running} processes and ignores the debugging flag while it owns the "
-              + "profile.\n\nEvery Chrome window will be asked to close, then Chrome restarts with "
-              + $"--remote-debugging-port={_settings.DebuggingPort} and restores the last session. Anything you "
-              + "typed into a page but did not submit will be lost.\n\nWhile that port is open, any program on "
-              + "this machine can control the browser through it.\n\nContinue?"
-            : $"Chrome will start with --remote-debugging-port={_settings.DebuggingPort} and restore your last "
-              + "session.\n\nWhile that port is open, any program on this machine can control the browser "
-              + "through it.\n\nContinue?";
-
-        DialogResult confirm = MessageBox.Show(
-            this, question, "Enable Chrome debugging", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-
-        Log($"Enable debugging confirmation: {confirm}", LogLevel.Info);
-
-        if (confirm != DialogResult.Yes)
+        if (!alreadyConfirmed)
         {
-            return;
+            string question = running > 0
+                ? $"Chrome is running with {running} processes and ignores the debugging switches while it owns "
+                  + "the profile.\n\nEvery Chrome window will be asked to close, then Chrome restarts with your "
+                  + "usual profile and restores the last session. Anything you typed into a page but did not "
+                  + "submit will be lost.\n\nWhile the debugging port is open, any program on this machine can "
+                  + "control the browser through it.\n\nContinue?"
+                : "Chrome will start with debugging enabled, using your usual profile, and restore your last "
+                  + "session.\n\nWhile the debugging port is open, any program on this machine can control the "
+                  + "browser through it.\n\nContinue?";
+
+            DialogResult confirm = MessageBox.Show(
+                this, question, "Enable Chrome debugging", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+            Log($"Enable debugging confirmation: {confirm}", LogLevel.Info);
+
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
         }
 
         _enableButton.Enabled = false;
@@ -622,7 +625,7 @@ public sealed class MainForm : Form
                 await Task.Delay(1500, cts.Token);
             }
 
-            ChromeLocator.LaunchWithDebugging(_settings.DebuggingPort);
+            ChromeLocator.LaunchWithDebugging(_settings.DebuggingPort, _settings.UserDataDirectory);
 
             _statusLabel.Text = "Chrome is starting...";
             _statusLabel.ForeColor = Muted;
@@ -678,18 +681,35 @@ public sealed class MainForm : Form
             string reason = running > 0
                 ? $"Chrome is running with {running} processes, but none of them exposes a DevTools endpoint on "
                   + $"port {_settings.DebuggingPort}.\n\nV8's garbage collector cannot be triggered from outside "
-                  + "the browser by any other means, so nothing can be freed until Chrome is restarted with "
-                  + "--remote-debugging-port.\n\nPress \"Enable debugging\" to do that now."
-                : "Chrome is not running, so there is nothing to trim.";
+                  + "the browser by any other means, so nothing can be freed until Chrome is restarted with the "
+                  + "debugging switches.\n\nRestart Chrome with debugging now?"
+                : "Chrome is not running.\n\nStart it with debugging now?";
 
             Log($"Trim refused: {reason.Replace("\n", " ")}", LogLevel.Warning);
 
-            if (!automatic)
+            if (automatic)
             {
-                MessageBox.Show(this, reason, "Nothing to trim", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
 
-            return;
+            // Offering the fix here beats a dialog that only restates the problem.
+            DialogResult answer = MessageBox.Show(
+                this, reason, "Nothing to trim", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            Log($"Nothing-to-trim prompt answered: {answer}", LogLevel.Info);
+
+            if (answer != DialogResult.Yes)
+            {
+                return;
+            }
+
+            await EnableDebuggingAsync(alreadyConfirmed: true);
+
+            if (_activePort is null)
+            {
+                Log("Debugging could not be enabled; the trim is abandoned.", LogLevel.Warning);
+                return;
+            }
         }
 
         _busy = true;
