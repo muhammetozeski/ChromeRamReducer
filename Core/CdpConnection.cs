@@ -27,10 +27,14 @@ public sealed class CdpConnection : IAsyncDisposable
 
     public static async Task<CdpConnection> ConnectAsync(int port, CancellationToken cancellationToken)
     {
+        Log($"Opening the DevTools browser endpoint on port {port}.", LogLevel.Info);
+
         using HttpClient http = new() { Timeout = TimeSpan.FromSeconds(4) };
 
         string json = await http.GetStringAsync(
             $"http://127.0.0.1:{port}/json/version", cancellationToken).ConfigureAwait(false);
+
+        Log($"/json/version returned: {json}", LogLevel.Debug);
 
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement root = document.RootElement;
@@ -44,8 +48,12 @@ public sealed class CdpConnection : IAsyncDisposable
             ? browser.GetString() ?? "unknown"
             : "unknown";
 
+        Log($"Connecting the WebSocket: {wsUrl}", LogLevel.Info);
+
         await connection._socket.ConnectAsync(new Uri(wsUrl), cancellationToken).ConfigureAwait(false);
         connection._pump = Task.Run(connection.PumpAsync);
+
+        Log($"WebSocket state is {connection._socket.State}. Browser: {connection.BrowserVersion}", LogLevel.Info);
 
         return connection;
     }
@@ -57,6 +65,7 @@ public sealed class CdpConnection : IAsyncDisposable
 
         if (!result.TryGetProperty("targetInfos", out JsonElement infos))
         {
+            Log("Target.getTargets returned no targetInfos array.", LogLevel.Warning);
             return [];
         }
 
@@ -139,6 +148,9 @@ public sealed class CdpConnection : IAsyncDisposable
 
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
 
+        Log($"--> #{id} {method}{(sessionId is null ? "" : $" (session {sessionId[..8]})")} "
+            + $"{Encoding.UTF8.GetString(payload)}", LogLevel.Debug);
+
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -193,10 +205,11 @@ public sealed class CdpConnection : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            // Normal shutdown.
+            Log("Receive pump stopped: the connection was closed on our side.", LogLevel.Debug);
         }
         catch (Exception ex)
         {
+            Log($"Receive pump died: {ex}", LogLevel.Error);
             FailAllPending(new CdpException("DevTools connection dropped.", ex));
         }
         finally
@@ -239,6 +252,7 @@ public sealed class CdpConnection : IAsyncDisposable
                     ? m.GetString() ?? "unknown DevTools error"
                     : "unknown DevTools error";
 
+                Log($"<-- #{id} ERROR {text}", LogLevel.Warning);
                 completion.TrySetException(new CdpException(text));
                 return;
             }
@@ -247,6 +261,7 @@ public sealed class CdpConnection : IAsyncDisposable
                 ? r.Clone()
                 : default;
 
+            Log($"<-- #{id} ok ({frame.Length} bytes)", LogLevel.Debug);
             completion.TrySetResult(payload);
         }
     }

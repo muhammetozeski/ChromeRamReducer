@@ -165,6 +165,22 @@ dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile
 
 ---
 
+## Diagnostics
+
+Every step is written to a log file, so a run that does nothing can be explained instead of guessed at:
+
+```text
+%APPDATA%\ChromeRamReducer\Logs\Log <timestamp>.txt
+```
+
+The **Open logs** button in the window opens that folder. The last ten files are kept and older ones
+are deleted on start. Each entry records the source file, member, line and thread it came from, and
+the same stream is mirrored live into the window, colour-coded by severity. Port probing, every
+DevTools request and reply, every attach that Chrome refuses, and both memory readings around a trim
+are all included, along with any unhandled exception.
+
+---
+
 ## Limitations
 
 - Chrome must be started with the debugging flag. There is no way around this; V8 exposes no external

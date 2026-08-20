@@ -45,6 +45,11 @@ public sealed class ChromeTrimmer(AppSettings settings)
         Stopwatch stopwatch = Stopwatch.StartNew();
         MemorySnapshot before = MemorySnapshot.Capture();
 
+        Log($"Trim started on port {port}. Before: {before.ProcessCount} processes, "
+            + $"committed {before.PrivateMb:N0} MB, working set {before.WorkingSetMb:N0} MB. "
+            + $"PurgeJavaScriptMemory={settings.PurgeJavaScriptMemory}, EmptyWorkingSets={settings.EmptyWorkingSets}",
+            LogLevel.Info);
+
         int visited = 0;
         int failed = 0;
         int emptied = 0;
@@ -62,6 +67,9 @@ public sealed class ChromeTrimmer(AppSettings settings)
 
             CdpTarget[] attachable = [.. targets.Where(t => AttachableTypes.Contains(t.Type, StringComparer.Ordinal))];
 
+            Log($"Targets reported by Chrome ({targets.Count}):\n  "
+                + string.Join("\n  ", targets.Select(t => $"[{t.Type}] {t.Title} <- {t.Url}")), LogLevel.Debug);
+
             progress?.Report($"{attachable.Length} of {targets.Count} targets are attachable.");
 
             foreach (CdpTarget target in attachable)
@@ -73,6 +81,7 @@ public sealed class ChromeTrimmer(AppSettings settings)
 
                 if (sessionId is null)
                 {
+                    Log($"Attach refused by {Describe(target)}.", LogLevel.Warning);
                     failed++;
                     continue;
                 }
@@ -90,8 +99,9 @@ public sealed class ChromeTrimmer(AppSettings settings)
                     visited++;
                     progress?.Report($"Collected: {Describe(target)}");
                 }
-                catch (CdpException)
+                catch (CdpException ex)
                 {
+                    Log($"Collection failed on {Describe(target)}: {ex.Message}", LogLevel.Warning);
                     failed++;
                 }
                 finally
@@ -113,6 +123,7 @@ public sealed class ChromeTrimmer(AppSettings settings)
         }
         catch (Exception ex)
         {
+            Log($"Trim aborted: {ex}", LogLevel.Error);
             error = ex.Message;
         }
 
@@ -129,7 +140,15 @@ public sealed class ChromeTrimmer(AppSettings settings)
         MemorySnapshot after = MemorySnapshot.Capture();
         stopwatch.Stop();
 
-        return new TrimResult(before, after, visited, failed, emptied, stopwatch.Elapsed, error);
+        TrimResult result = new(before, after, visited, failed, emptied, stopwatch.Elapsed, error);
+
+        Log($"Trim finished in {result.Duration.TotalSeconds:F1}s. "
+            + $"Collected {visited}, skipped {failed}. "
+            + $"Committed {before.PrivateMb:N0} -> {after.PrivateMb:N0} MB (released {result.ReleasedMb:N0} MB). "
+            + $"Working set {before.WorkingSetMb:N0} -> {after.WorkingSetMb:N0} MB.",
+            result.Succeeded ? LogLevel.Info : LogLevel.Error);
+
+        return result;
     }
 
     private static string Describe(CdpTarget target)
