@@ -139,16 +139,89 @@ public static class ChromeLocator
         }
     }
 
+    /// <summary>Directory junction that points at the real profile without being the default path.</summary>
+    public static string DebugProfileLink { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Google", "Chrome", "UserDataDbg");
+
+    /// <summary>
+    /// Since Chrome 136 the DevTools endpoint is refused whenever the profile directory is the
+    /// default one, and passing that same path explicitly through --user-data-dir does not help:
+    /// Chrome compares the directory, not the presence of the switch. A directory junction is not
+    /// resolved by that comparison, so pointing --user-data-dir at a junction leaves Chrome reading
+    /// and writing the user's real profile - same bookmarks, logins, extensions and session - while
+    /// the endpoint is allowed to start.
+    /// </summary>
+    /// <returns>Path of the junction, ready to be handed to --user-data-dir.</returns>
+    public static string EnsureDebugProfileLink()
+    {
+        string link = DebugProfileLink;
+        string target = DefaultUserDataDirectory;
+
+        if (Directory.Exists(link))
+        {
+            string? existing = new DirectoryInfo(link).LinkTarget;
+
+            if (existing is not null && string.Equals(
+                    Path.TrimEndingDirectorySeparator(existing),
+                    Path.TrimEndingDirectorySeparator(target),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"Debug profile junction already in place: {link} -> {existing}", LogLevel.Info);
+                return link;
+            }
+
+            throw new IOException(
+                $"'{link}' already exists and does not point at '{target}'. Remove it and try again.");
+        }
+
+        if (!Directory.Exists(target))
+        {
+            throw new DirectoryNotFoundException($"Chrome's profile directory was not found: {target}");
+        }
+
+        Log($"Creating the debug profile junction: {link} -> {target}", LogLevel.Info);
+
+        // A junction needs no elevation, unlike a symbolic link, so mklink /J is used rather than
+        // Directory.CreateSymbolicLink.
+        ProcessStartInfo startInfo = new("cmd.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(link);
+        startInfo.ArgumentList.Add(target);
+
+        using Process? process = Process.Start(startInfo)
+            ?? throw new IOException("cmd.exe could not be started to create the junction.");
+
+        string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit(10_000);
+
+        if (!Directory.Exists(link))
+        {
+            throw new IOException($"The junction could not be created. mklink said: {output.Trim()}");
+        }
+
+        Log($"Junction created. mklink said: {output.Trim()}", LogLevel.Info);
+        return link;
+    }
+
     /// <summary>
     /// Starts Chrome with the debugging endpoint enabled. Chrome ignores the flag when another
     /// instance already owns the profile, so the caller must make sure Chrome is closed first.
     /// </summary>
     /// <param name="port">Value for --remote-debugging-port.</param>
     /// <param name="userDataDirectory">
-    /// Profile directory to pass as --user-data-dir. Since Chrome 136 the debugging endpoint is
-    /// refused unless this switch is present on the command line, even when the value it carries is
-    /// the default profile path, so it is always supplied. Passing the default path keeps the user's
-    /// real bookmarks, logins and extensions.
+    /// Profile directory to pass as --user-data-dir. Leave empty to use the junction produced by
+    /// <see cref="EnsureDebugProfileLink"/>, which keeps the real profile while satisfying Chrome's
+    /// rule that the directory must not be the default one.
     /// </param>
     public static void LaunchWithDebugging(int port, string? userDataDirectory = null)
     {
@@ -156,7 +229,7 @@ public static class ChromeLocator
             ?? throw new FileNotFoundException("chrome.exe was not found in any of the usual install locations.");
 
         string profile = string.IsNullOrWhiteSpace(userDataDirectory)
-            ? DefaultUserDataDirectory
+            ? EnsureDebugProfileLink()
             : userDataDirectory;
 
         ProcessStartInfo startInfo = new(executable)

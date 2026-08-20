@@ -574,15 +574,19 @@ public sealed class MainForm : Form
 
         if (!alreadyConfirmed)
         {
+            string common =
+                "Chrome refuses to open its debugging port when the profile directory is the default one, so a "
+                + $"directory junction is created at\n{ChromeLocator.DebugProfileLink}\npointing at your real "
+                + "profile. Chrome reads and writes the same bookmarks, logins and extensions through it.\n\n"
+                + "While the debugging port is open, any program on this machine can control the browser "
+                + "through it.\n\nContinue?";
+
             string question = running > 0
                 ? $"Chrome is running with {running} processes and ignores the debugging switches while it owns "
-                  + "the profile.\n\nEvery Chrome window will be asked to close, then Chrome restarts with your "
-                  + "usual profile and restores the last session. Anything you typed into a page but did not "
-                  + "submit will be lost.\n\nWhile the debugging port is open, any program on this machine can "
-                  + "control the browser through it.\n\nContinue?"
-                : "Chrome will start with debugging enabled, using your usual profile, and restore your last "
-                  + "session.\n\nWhile the debugging port is open, any program on this machine can control the "
-                  + "browser through it.\n\nContinue?";
+                  + "the profile. Every window will be asked to close, then Chrome restarts and restores the "
+                  + "last session. Anything you typed into a page but did not submit will be lost.\n\n"
+                  + common
+                : "Chrome will start with debugging enabled and restore your last session.\n\n" + common;
 
             DialogResult confirm = MessageBox.Show(
                 this, question, "Enable Chrome debugging", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
