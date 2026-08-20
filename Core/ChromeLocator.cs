@@ -21,11 +21,34 @@ public static class ChromeLocator
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Google", "Chrome", "User Data");
 
-    public static string? FindExecutable() =>
-        ExecutableCandidates.FirstOrDefault(File.Exists);
+    public static string? FindExecutable()
+    {
+        foreach (string candidate in ExecutableCandidates)
+        {
+            if (File.Exists(candidate))
+            {
+                Log($"chrome.exe found at: {candidate}", LogLevel.Info);
+                return candidate;
+            }
+        }
 
-    public static bool IsChromeRunning() =>
-        Process.GetProcessesByName("chrome").Length > 0;
+        Log($"chrome.exe not found. Looked in:\n  {string.Join("\n  ", ExecutableCandidates)}", LogLevel.Error);
+        return null;
+    }
+
+    public static int CountChromeProcesses()
+    {
+        Process[] processes = Process.GetProcessesByName("chrome");
+
+        foreach (Process process in processes)
+        {
+            process.Dispose();
+        }
+
+        return processes.Length;
+    }
+
+    public static bool IsChromeRunning() => CountChromeProcesses() > 0;
 
     /// <summary>
     /// Chrome writes the live DevTools port into User Data\DevToolsActivePort whenever the endpoint
@@ -39,6 +62,7 @@ public static class ChromeLocator
         {
             if (!File.Exists(path))
             {
+                Log($"DevToolsActivePort file is absent: {path}", LogLevel.Info);
                 return null;
             }
 
@@ -47,10 +71,18 @@ public static class ChromeLocator
 
             string? firstLine = reader.ReadLine();
 
-            return int.TryParse(firstLine, out int port) && port is > 0 and <= 65535 ? port : null;
+            if (int.TryParse(firstLine, out int port) && port is > 0 and <= 65535)
+            {
+                Log($"DevToolsActivePort file reports port {port}.", LogLevel.Info);
+                return port;
+            }
+
+            Log($"DevToolsActivePort file holds an unusable first line: '{firstLine}'.", LogLevel.Warning);
+            return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            Log($"DevToolsActivePort file could not be read: {ex}", LogLevel.Warning);
             return null;
         }
     }
@@ -58,10 +90,11 @@ public static class ChromeLocator
     /// <summary>Returns the first port that actually answers as a Chrome DevTools endpoint.</summary>
     public static async Task<int?> DiscoverPortAsync(AppSettings settings, CancellationToken cancellationToken)
     {
+        Log($"Port discovery started. Chrome processes running: {CountChromeProcesses()}.", LogLevel.Info);
+
         List<int> candidates = [];
 
-        int? activePort = ReadDevToolsActivePort(DefaultUserDataDirectory);
-        if (activePort is int active)
+        if (ReadDevToolsActivePort(DefaultUserDataDirectory) is int active)
         {
             candidates.Add(active);
         }
@@ -71,14 +104,18 @@ public static class ChromeLocator
             candidates.Add(settings.DebuggingPort);
         }
 
+        Log($"Probing ports: {string.Join(", ", candidates)}", LogLevel.Info);
+
         foreach (int candidate in candidates)
         {
             if (await RespondsAsync(candidate, cancellationToken).ConfigureAwait(false))
             {
+                Log($"Port {candidate} answered as a DevTools endpoint.", LogLevel.Info);
                 return candidate;
             }
         }
 
+        Log("No port answered. Chrome is not exposing a DevTools endpoint.", LogLevel.Warning);
         return null;
     }
 
@@ -86,14 +123,18 @@ public static class ChromeLocator
     {
         try
         {
-            using HttpClient http = new() { Timeout = TimeSpan.FromMilliseconds(1200) };
+            using HttpClient http = new() { Timeout = TimeSpan.FromMilliseconds(1500) };
             string body = await http.GetStringAsync($"http://127.0.0.1:{port}/json/version", cancellationToken)
                 .ConfigureAwait(false);
 
-            return body.Contains("webSocketDebuggerUrl", StringComparison.Ordinal);
+            bool usable = body.Contains("webSocketDebuggerUrl", StringComparison.Ordinal);
+            Log($"Port {port} replied {body.Length} bytes, usable endpoint: {usable}.", LogLevel.Debug);
+
+            return usable;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
+            Log($"Port {port} did not answer: {ex.GetType().Name} - {ex.Message}", LogLevel.Debug);
             return false;
         }
     }
@@ -115,6 +156,55 @@ public static class ChromeLocator
         startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
         startInfo.ArgumentList.Add("--restore-last-session");
 
+        Log($"Starting: \"{executable}\" --remote-debugging-port={port} --restore-last-session", LogLevel.Info);
         Process.Start(startInfo);
+    }
+
+    /// <summary>
+    /// Asks every Chrome window to close and waits for the processes to go away, so the profile is
+    /// released and the debugging flag will be honoured on the next start.
+    /// </summary>
+    /// <returns>True when no Chrome process is left.</returns>
+    public static async Task<bool> CloseChromeAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        Log("Asking Chrome to close its windows.", LogLevel.Info);
+
+        foreach (Process process in Process.GetProcessesByName("chrome"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.MainWindowHandle != nint.Zero)
+                    {
+                        process.CloseMainWindow();
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    Log($"Could not signal Chrome process {process.Id}: {ex.Message}", LogLevel.Debug);
+                }
+            }
+        }
+
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            int remaining = CountChromeProcesses();
+
+            if (remaining == 0)
+            {
+                Log("Chrome has exited.", LogLevel.Info);
+                return true;
+            }
+
+            await Task.Delay(400, cancellationToken).ConfigureAwait(false);
+        }
+
+        Log($"Chrome is still running after {timeout.TotalSeconds:F0}s ({CountChromeProcesses()} processes).",
+            LogLevel.Warning);
+
+        return false;
     }
 }

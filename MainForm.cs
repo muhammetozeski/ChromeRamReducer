@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using ChromeRamReducer.Core;
 
 namespace ChromeRamReducer;
@@ -10,6 +11,7 @@ public sealed class MainForm : Form
     private static readonly Color Accent = Color.FromArgb(26, 115, 232);
     private static readonly Color Good = Color.FromArgb(24, 128, 56);
     private static readonly Color Warn = Color.FromArgb(191, 84, 12);
+    private static readonly Color Bad = Color.FromArgb(197, 34, 31);
 
     private readonly AppSettings _settings;
     private readonly ChromeTrimmer _trimmer;
@@ -22,13 +24,14 @@ public sealed class MainForm : Form
     private readonly Label _committedValue = new();
     private readonly Label _processCountLabel = new();
     private readonly Button _trimButton = new();
-    private readonly Button _launchButton = new();
+    private readonly Button _enableButton = new();
+    private readonly Button _logFolderButton = new();
     private readonly CheckBox _purgeCheck = new();
     private readonly CheckBox _emptyWorkingSetCheck = new();
     private readonly CheckBox _autoTrimCheck = new();
     private readonly NumericUpDown _autoTrimMinutes = new();
     private readonly NumericUpDown _portInput = new();
-    private readonly TextBox _log = new();
+    private readonly RichTextBox _log = new();
 
     private int? _activePort;
     private bool _busy;
@@ -36,12 +39,14 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
+        Log("MainForm is being constructed.", LogLevel.Info);
+
         _settings = AppSettings.Load();
         _trimmer = new ChromeTrimmer(_settings);
 
         Text = "Chrome RAM Reducer";
-        MinimumSize = new Size(620, 640);
-        Size = new Size(620, 690);
+        MinimumSize = new Size(660, 660);
+        Size = new Size(660, 720);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.White;
         ForeColor = Ink;
@@ -60,11 +65,18 @@ public sealed class MainForm : Form
         BuildLayout();
         ApplySettingsToControls();
 
+        Logger.Logged += OnLogged;
+
         _statsTimer.Tick += (_, _) => RefreshStats();
-        _autoTrimTimer.Tick += async (_, _) => await RunTrimAsync(automatic: true);
+        _autoTrimTimer.Tick += async (_, _) =>
+        {
+            Log("Automatic trim timer fired.", LogLevel.Info);
+            await RunTrimAsync(automatic: true);
+        };
 
         Load += async (_, _) =>
         {
+            Log($"Form loaded. Log file: {Logger.LogFileName}", LogLevel.Info);
             RefreshStats();
             _statsTimer.Start();
             ConfigureAutoTrimTimer();
@@ -82,6 +94,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex) when (ex is ArgumentException or IOException)
         {
+            Log($"Icon could not be extracted from the executable: {ex.Message}", LogLevel.Warning);
             return null;
         }
     }
@@ -90,10 +103,21 @@ public sealed class MainForm : Form
     {
         ContextMenuStrip menu = new();
 
-        ToolStripMenuItem open = new("Open", null, (_, _) => RestoreFromTray());
-        ToolStripMenuItem trim = new("Trim now", null, async (_, _) => await RunTrimAsync(automatic: false));
+        ToolStripMenuItem open = new("Open", null, (_, _) =>
+        {
+            Log("Tray menu: Open.", LogLevel.Info);
+            RestoreFromTray();
+        });
+
+        ToolStripMenuItem trim = new("Trim now", null, async (_, _) =>
+        {
+            Log("Tray menu: Trim now.", LogLevel.Info);
+            await RunTrimAsync(automatic: false);
+        });
+
         ToolStripMenuItem exit = new("Exit", null, (_, _) =>
         {
+            Log("Tray menu: Exit.", LogLevel.Info);
             _reallyClosing = true;
             Close();
         });
@@ -139,6 +163,7 @@ public sealed class MainForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 12),
+            WrapContents = false,
         };
 
         Label title = new()
@@ -151,7 +176,9 @@ public sealed class MainForm : Form
 
         _statusLabel.Text = "Looking for Chrome...";
         _statusLabel.ForeColor = Muted;
-        _statusLabel.AutoSize = true;
+        _statusLabel.AutoSize = false;
+        _statusLabel.Height = 36;
+        _statusLabel.Width = 600;
         _statusLabel.Margin = new Padding(0, 4, 0, 0);
 
         header.Controls.Add(title);
@@ -235,31 +262,59 @@ public sealed class MainForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 12),
+            WrapContents = false,
         };
 
         _trimButton.Text = "Trim now";
-        _trimButton.Size = new Size(150, 38);
+        _trimButton.Size = new Size(140, 38);
         _trimButton.FlatStyle = FlatStyle.Flat;
         _trimButton.FlatAppearance.BorderSize = 0;
         _trimButton.BackColor = Accent;
         _trimButton.ForeColor = Color.White;
         _trimButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
         _trimButton.Cursor = Cursors.Hand;
-        _trimButton.Click += async (_, _) => await RunTrimAsync(automatic: false);
+        _trimButton.Click += async (_, _) =>
+        {
+            Log("Button clicked: Trim now.", LogLevel.Info);
+            await RunTrimAsync(automatic: false);
+        };
 
-        _launchButton.Text = "Start Chrome with debugging";
-        _launchButton.Size = new Size(220, 38);
-        _launchButton.FlatStyle = FlatStyle.Flat;
-        _launchButton.Cursor = Cursors.Hand;
-        _launchButton.Margin = new Padding(10, 3, 3, 3);
-        _launchButton.Click += (_, _) => LaunchChrome();
+        _enableButton.Text = "Enable debugging";
+        _enableButton.Size = new Size(170, 38);
+        _enableButton.FlatStyle = FlatStyle.Flat;
+        _enableButton.Cursor = Cursors.Hand;
+        _enableButton.Margin = new Padding(10, 3, 3, 3);
+        _enableButton.Click += async (_, _) =>
+        {
+            Log("Button clicked: Enable debugging.", LogLevel.Info);
+            await EnableDebuggingAsync();
+        };
+
+        _logFolderButton.Text = "Open logs";
+        _logFolderButton.Size = new Size(110, 38);
+        _logFolderButton.FlatStyle = FlatStyle.Flat;
+        _logFolderButton.Cursor = Cursors.Hand;
+        _logFolderButton.Margin = new Padding(10, 3, 3, 3);
+        _logFolderButton.Click += (_, _) =>
+        {
+            Log($"Button clicked: Open logs -> {Logger.LogsFolder}", LogLevel.Info);
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(Logger.LogsFolder) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log($"Log folder could not be opened: {ex}", LogLevel.Error);
+            }
+        };
 
         _processCountLabel.Text = string.Empty;
         _processCountLabel.ForeColor = Muted;
         _processCountLabel.AutoSize = true;
         _processCountLabel.Margin = new Padding(12, 12, 0, 0);
 
-        actions.Controls.AddRange([_trimButton, _launchButton, _processCountLabel]);
+        actions.Controls.AddRange([_trimButton, _enableButton, _logFolderButton, _processCountLabel]);
 
         return actions;
     }
@@ -289,6 +344,7 @@ public sealed class MainForm : Form
         {
             _settings.PurgeJavaScriptMemory = _purgeCheck.Checked;
             _settings.Save();
+            Log($"Setting changed: PurgeJavaScriptMemory = {_purgeCheck.Checked}", LogLevel.Info);
         };
 
         _emptyWorkingSetCheck.Text = "Also empty working sets (cosmetic - lowers Task Manager only)";
@@ -298,6 +354,7 @@ public sealed class MainForm : Form
         {
             _settings.EmptyWorkingSets = _emptyWorkingSetCheck.Checked;
             _settings.Save();
+            Log($"Setting changed: EmptyWorkingSets = {_emptyWorkingSetCheck.Checked}", LogLevel.Info);
         };
 
         FlowLayoutPanel autoRow = new()
@@ -305,6 +362,7 @@ public sealed class MainForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             AutoSize = true,
             Margin = new Padding(0, 4, 0, 0),
+            WrapContents = false,
         };
 
         _autoTrimCheck.Text = "Trim automatically every";
@@ -314,6 +372,7 @@ public sealed class MainForm : Form
         {
             _settings.AutoTrimEnabled = _autoTrimCheck.Checked;
             _settings.Save();
+            Log($"Setting changed: AutoTrimEnabled = {_autoTrimCheck.Checked}", LogLevel.Info);
             ConfigureAutoTrimTimer();
         };
 
@@ -324,6 +383,7 @@ public sealed class MainForm : Form
         {
             _settings.AutoTrimMinutes = (int)_autoTrimMinutes.Value;
             _settings.Save();
+            Log($"Setting changed: AutoTrimMinutes = {_settings.AutoTrimMinutes}", LogLevel.Info);
             ConfigureAutoTrimTimer();
         };
 
@@ -341,6 +401,7 @@ public sealed class MainForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             AutoSize = true,
             Margin = new Padding(0, 6, 0, 0),
+            WrapContents = false,
         };
 
         Label portLabel = new()
@@ -357,6 +418,7 @@ public sealed class MainForm : Form
         {
             _settings.DebuggingPort = (int)_portInput.Value;
             _settings.Save();
+            Log($"Setting changed: DebuggingPort = {_settings.DebuggingPort}", LogLevel.Info);
         };
 
         Button rediscover = new()
@@ -367,7 +429,11 @@ public sealed class MainForm : Form
             Margin = new Padding(10, 1, 0, 0),
             Cursor = Cursors.Hand,
         };
-        rediscover.Click += async (_, _) => await DiscoverPortAsync();
+        rediscover.Click += async (_, _) =>
+        {
+            Log("Button clicked: Re-detect.", LogLevel.Info);
+            await DiscoverPortAsync();
+        };
 
         portRow.Controls.AddRange([portLabel, _portInput, rediscover]);
 
@@ -395,13 +461,13 @@ public sealed class MainForm : Form
 
     private Control BuildLogPanel()
     {
-        _log.Multiline = true;
         _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.Vertical;
         _log.Dock = DockStyle.Fill;
         _log.BackColor = Surface;
         _log.BorderStyle = BorderStyle.FixedSingle;
-        _log.Font = new Font("Consolas", 9F);
+        _log.Font = new Font("Consolas", 8.5F);
+        _log.WordWrap = true;
+        _log.DetectUrls = false;
 
         return _log;
     }
@@ -413,6 +479,10 @@ public sealed class MainForm : Form
         _autoTrimCheck.Checked = _settings.AutoTrimEnabled;
         _autoTrimMinutes.Value = Math.Clamp(_settings.AutoTrimMinutes, 1, 720);
         _portInput.Value = Math.Clamp(_settings.DebuggingPort, 1024, 65535);
+
+        Log($"Settings applied: port={_settings.DebuggingPort}, purge={_settings.PurgeJavaScriptMemory}, "
+            + $"emptyWorkingSets={_settings.EmptyWorkingSets}, autoTrim={_settings.AutoTrimEnabled}/"
+            + $"{_settings.AutoTrimMinutes}min", LogLevel.Info);
     }
 
     private void ConfigureAutoTrimTimer()
@@ -423,6 +493,11 @@ public sealed class MainForm : Form
         {
             _autoTrimTimer.Interval = Math.Max(1, _settings.AutoTrimMinutes) * 60_000;
             _autoTrimTimer.Start();
+            Log($"Automatic trim armed for every {_settings.AutoTrimMinutes} minutes.", LogLevel.Info);
+        }
+        else
+        {
+            Log("Automatic trim disarmed.", LogLevel.Info);
         }
     }
 
@@ -442,7 +517,7 @@ public sealed class MainForm : Form
         _statusLabel.Text = "Looking for the DevTools endpoint...";
         _statusLabel.ForeColor = Muted;
 
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(6));
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(8));
 
         try
         {
@@ -450,6 +525,12 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
+            Log("Port discovery timed out.", LogLevel.Warning);
+            _activePort = null;
+        }
+        catch (Exception ex)
+        {
+            Log($"Port discovery threw: {ex}", LogLevel.Error);
             _activePort = null;
         }
 
@@ -458,101 +539,164 @@ public sealed class MainForm : Form
 
     private void UpdatePortStatus()
     {
+        int chromeProcesses = ChromeLocator.CountChromeProcesses();
+
         if (_activePort is int port)
         {
-            _statusLabel.Text = $"DevTools endpoint reachable on port {port}. Garbage collection is available.";
+            _statusLabel.Text = $"Ready. DevTools endpoint answering on port {port}, {chromeProcesses} Chrome processes.";
             _statusLabel.ForeColor = Good;
-            _trimButton.Enabled = !_busy;
-            _launchButton.Visible = false;
+            _enableButton.Enabled = false;
         }
-        else if (ChromeLocator.IsChromeRunning())
+        else if (chromeProcesses > 0)
         {
-            _statusLabel.Text = "Chrome is running without a debugging port. Close it, then start it from here.";
-            _statusLabel.ForeColor = Warn;
-            _trimButton.Enabled = false;
-            _launchButton.Visible = true;
+            _statusLabel.Text = "Chrome is running WITHOUT a debugging port, so V8 cannot be reached.\n"
+                              + "Press \"Enable debugging\" to restart it with the flag.";
+            _statusLabel.ForeColor = Bad;
+            _enableButton.Enabled = true;
         }
         else
         {
-            _statusLabel.Text = "Chrome is not running.";
+            _statusLabel.Text = "Chrome is not running. Press \"Enable debugging\" to start it with the flag.";
             _statusLabel.ForeColor = Muted;
-            _trimButton.Enabled = false;
-            _launchButton.Visible = true;
+            _enableButton.Enabled = true;
         }
+
+        // The trim button stays clickable on purpose: a dead button teaches the user nothing.
+        _trimButton.Enabled = !_busy;
+
+        Log($"Status updated. activePort={_activePort?.ToString() ?? "none"}, chromeProcesses={chromeProcesses}",
+            LogLevel.Info);
     }
 
-    private void LaunchChrome()
+    private async Task EnableDebuggingAsync()
     {
-        if (ChromeLocator.IsChromeRunning())
-        {
-            MessageBox.Show(
-                this,
-                "Chrome is already running. Chrome ignores the debugging flag while another instance owns "
-                + "the profile, so close every Chrome window first and then press this button again.",
-                "Close Chrome first",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+        int running = ChromeLocator.CountChromeProcesses();
 
-            return;
-        }
+        string question = running > 0
+            ? $"Chrome is running with {running} processes and ignores the debugging flag while it owns the "
+              + "profile.\n\nEvery Chrome window will be asked to close, then Chrome restarts with "
+              + $"--remote-debugging-port={_settings.DebuggingPort} and restores the last session. Anything you "
+              + "typed into a page but did not submit will be lost.\n\nWhile that port is open, any program on "
+              + "this machine can control the browser through it.\n\nContinue?"
+            : $"Chrome will start with --remote-debugging-port={_settings.DebuggingPort} and restore your last "
+              + "session.\n\nWhile that port is open, any program on this machine can control the browser "
+              + "through it.\n\nContinue?";
 
         DialogResult confirm = MessageBox.Show(
-            this,
-            $"Chrome will start with --remote-debugging-port={_settings.DebuggingPort} and restore your last "
-            + "session.\n\nWhile that port is open, any program running on this machine can control the "
-            + "browser through it. Continue?",
-            "Start Chrome with debugging",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning);
+            this, question, "Enable Chrome debugging", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+        Log($"Enable debugging confirmation: {confirm}", LogLevel.Info);
 
         if (confirm != DialogResult.Yes)
         {
             return;
         }
 
+        _enableButton.Enabled = false;
+
         try
         {
+            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(60));
+
+            if (running > 0)
+            {
+                _statusLabel.Text = "Waiting for Chrome to close...";
+                _statusLabel.ForeColor = Warn;
+
+                bool closed = await ChromeLocator.CloseChromeAsync(TimeSpan.FromSeconds(20), cts.Token);
+
+                if (!closed)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Chrome did not close. It may be showing a \"leave site?\" prompt on one of the tabs. "
+                        + "Close the remaining windows yourself and press \"Enable debugging\" again.",
+                        "Chrome is still running",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+
+                    UpdatePortStatus();
+                    return;
+                }
+
+                await Task.Delay(1500, cts.Token);
+            }
+
             ChromeLocator.LaunchWithDebugging(_settings.DebuggingPort);
-            AppendLog($"Chrome launched with --remote-debugging-port={_settings.DebuggingPort}.");
+
+            _statusLabel.Text = "Chrome is starting...";
+            _statusLabel.ForeColor = Muted;
+
+            // Chrome needs a moment before the endpoint accepts connections.
+            for (int attempt = 1; attempt <= 12; attempt++)
+            {
+                await Task.Delay(1000, cts.Token);
+
+                _activePort = await ChromeLocator.DiscoverPortAsync(_settings, cts.Token);
+
+                if (_activePort is not null)
+                {
+                    Log($"Endpoint became available after {attempt} attempts.", LogLevel.Info);
+                    break;
+                }
+            }
+
+            UpdatePortStatus();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Could not start Chrome", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Log($"Enabling debugging failed: {ex}", LogLevel.Error);
+
+            MessageBox.Show(this, ex.Message, "Could not enable debugging",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+            UpdatePortStatus();
         }
     }
 
     private async Task RunTrimAsync(bool automatic)
     {
+        Log($"RunTrimAsync entered. automatic={automatic}, busy={_busy}, "
+            + $"activePort={_activePort?.ToString() ?? "none"}", LogLevel.Info);
+
         if (_busy)
         {
+            Log("A trim is already running; this request was ignored.", LogLevel.Warning);
             return;
         }
 
         if (_activePort is null)
         {
+            Log("No known port; running discovery before giving up.", LogLevel.Info);
             await DiscoverPortAsync();
+        }
 
-            if (_activePort is null)
+        if (_activePort is null)
+        {
+            int running = ChromeLocator.CountChromeProcesses();
+
+            string reason = running > 0
+                ? $"Chrome is running with {running} processes, but none of them exposes a DevTools endpoint on "
+                  + $"port {_settings.DebuggingPort}.\n\nV8's garbage collector cannot be triggered from outside "
+                  + "the browser by any other means, so nothing can be freed until Chrome is restarted with "
+                  + "--remote-debugging-port.\n\nPress \"Enable debugging\" to do that now."
+                : "Chrome is not running, so there is nothing to trim.";
+
+            Log($"Trim refused: {reason.Replace("\n", " ")}", LogLevel.Warning);
+
+            if (!automatic)
             {
-                if (!automatic)
-                {
-                    MessageBox.Show(
-                        this,
-                        "No DevTools endpoint answered. Start Chrome with the debugging port first.",
-                        "Nothing to trim",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
-
-                return;
+                MessageBox.Show(this, reason, "Nothing to trim", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
+
+            return;
         }
 
         _busy = true;
         _trimButton.Enabled = false;
         _trimButton.Text = "Working...";
 
-        Progress<string> progress = new(AppendLog);
+        Progress<string> progress = new(message => Log(message, LogLevel.Info));
 
         try
         {
@@ -570,11 +714,11 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
-            AppendLog("Trim cancelled: it took longer than two minutes.");
+            Log("Trim cancelled: it took longer than two minutes.", LogLevel.Error);
         }
         catch (Exception ex)
         {
-            AppendLog($"Trim failed: {ex.Message}");
+            Log($"Trim failed: {ex}", LogLevel.Error);
             _activePort = null;
             UpdatePortStatus();
         }
@@ -582,7 +726,7 @@ public sealed class MainForm : Form
         {
             _busy = false;
             _trimButton.Text = "Trim now";
-            _trimButton.Enabled = _activePort is not null;
+            _trimButton.Enabled = true;
         }
     }
 
@@ -590,21 +734,12 @@ public sealed class MainForm : Form
     {
         if (!result.Succeeded)
         {
-            AppendLog($"Error: {result.Error}");
+            Log($"Trim reported an error: {result.Error}", LogLevel.Error);
             return;
         }
 
-        AppendLog(
-            $"Done in {result.Duration.TotalSeconds:F1}s - {result.TargetsVisited} targets collected, "
-            + $"{result.TargetsFailed} skipped.");
-
-        AppendLog(
-            $"  Committed  {result.Before.PrivateMb:N0} MB -> {result.After.PrivateMb:N0} MB "
-            + $"({result.ReleasedMb:+#,##0;-#,##0;0} MB released)");
-
-        AppendLog(
-            $"  Working set {result.Before.WorkingSetMb:N0} MB -> {result.After.WorkingSetMb:N0} MB "
-            + $"({result.WorkingSetDropMb:+#,##0;-#,##0;0} MB)");
+        Log($"Released {result.ReleasedMb:N0} MB of committed memory. "
+            + $"Working set moved by {result.WorkingSetDropMb:N0} MB.", LogLevel.Info);
 
         if (result.ReleasedMb >= 1)
         {
@@ -614,16 +749,56 @@ public sealed class MainForm : Form
         }
     }
 
-    private void AppendLog(string message)
+    private void OnLogged(string message, Logger.LogLevel level)
     {
-        string line = $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}";
+        if (IsDisposed || _log.IsDisposed)
+        {
+            return;
+        }
 
-        if (_log.TextLength > 60_000)
+        if (InvokeRequired)
+        {
+            try
+            {
+                BeginInvoke(() => AppendToView(message, level));
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException)
+            {
+                // The window went away while a background thread was logging.
+            }
+
+            return;
+        }
+
+        AppendToView(message, level);
+    }
+
+    private void AppendToView(string message, Logger.LogLevel level)
+    {
+        if (_log.IsDisposed)
+        {
+            return;
+        }
+
+        if (_log.TextLength > 200_000)
         {
             _log.Clear();
         }
 
-        _log.AppendText(line);
+        Color colour = level.Name switch
+        {
+            nameof(Logger.LogLevel.Error) => Bad,
+            nameof(Logger.LogLevel.Warning) => Warn,
+            nameof(Logger.LogLevel.Info) => Ink,
+            _ => Muted,
+        };
+
+        _log.SelectionStart = _log.TextLength;
+        _log.SelectionLength = 0;
+        _log.SelectionColor = colour;
+        _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        _log.SelectionColor = _log.ForeColor;
+        _log.ScrollToCaret();
     }
 
     private void RestoreFromTray()
@@ -631,10 +806,20 @@ public sealed class MainForm : Form
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
+        BringToFront();
+    }
+
+    /// <summary>Called when a second launch signals this instance instead of starting its own window.</summary>
+    public void ShowFromAnotherInstance()
+    {
+        Log("Restoring the window on behalf of a second launch.", LogLevel.Info);
+        RestoreFromTray();
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
+        Log($"FormClosing. reason={e.CloseReason}, reallyClosing={_reallyClosing}", LogLevel.Info);
+
         if (!_reallyClosing && _settings.MinimiseToTray && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
@@ -642,6 +827,7 @@ public sealed class MainForm : Form
             return;
         }
 
+        Logger.Logged -= OnLogged;
         _statsTimer.Stop();
         _autoTrimTimer.Stop();
         _trayIcon.Visible = false;
@@ -652,6 +838,7 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            Logger.Logged -= OnLogged;
             _trayIcon.Dispose();
             _statsTimer.Dispose();
             _autoTrimTimer.Dispose();
