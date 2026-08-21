@@ -541,23 +541,24 @@ public sealed class MainForm : Form
     {
         int chromeProcesses = ChromeLocator.CountChromeProcesses();
 
-        if (_activePort is int port)
+        if (chromeProcesses == 0)
         {
-            _statusLabel.Text = $"Ready. DevTools endpoint answering on port {port}, {chromeProcesses} Chrome processes.";
+            _statusLabel.Text = "Chrome is not running.";
+            _statusLabel.ForeColor = Muted;
+            _enableButton.Enabled = true;
+        }
+        else if (_activePort is int port)
+        {
+            _statusLabel.Text = $"Ready. {chromeProcesses} Chrome processes. DevTools port {port} is open, "
+                              + "so \"Trim now\" also runs a real V8 collection.";
             _statusLabel.ForeColor = Good;
             _enableButton.Enabled = false;
         }
-        else if (chromeProcesses > 0)
-        {
-            _statusLabel.Text = "Chrome is running WITHOUT a debugging port, so V8 cannot be reached.\n"
-                              + "Press \"Enable debugging\" to restart it with the flag.";
-            _statusLabel.ForeColor = Bad;
-            _enableButton.Enabled = true;
-        }
         else
         {
-            _statusLabel.Text = "Chrome is not running. Press \"Enable debugging\" to start it with the flag.";
-            _statusLabel.ForeColor = Muted;
+            _statusLabel.Text = $"Ready. {chromeProcesses} Chrome processes. \"Trim now\" frees their working "
+                              + "set. For a deeper V8 collection, \"Enable debugging\" is optional.";
+            _statusLabel.ForeColor = Good;
             _enableButton.Enabled = true;
         }
 
@@ -672,48 +673,26 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (_activePort is null)
+        if (ChromeLocator.CountChromeProcesses() == 0)
         {
-            Log("No known port; running discovery before giving up.", LogLevel.Info);
-            await DiscoverPortAsync();
+            Log("Chrome is not running; nothing to trim.", LogLevel.Info);
+
+            if (!automatic)
+            {
+                _statusLabel.Text = "Chrome is not running.";
+                _statusLabel.ForeColor = Muted;
+            }
+
+            return;
         }
 
+        // A DevTools port is an optional bonus: when one happens to be there, V8 is asked to collect,
+        // which hands committed memory back. It is never required. The working-set trim below runs on
+        // every Chrome process with no port, no injection and no restart, and is what frees physical
+        // RAM the moment the button is pressed.
         if (_activePort is null)
         {
-            int running = ChromeLocator.CountChromeProcesses();
-
-            string reason = running > 0
-                ? $"Chrome is running with {running} processes, but none of them exposes a DevTools endpoint on "
-                  + $"port {_settings.DebuggingPort}.\n\nV8's garbage collector cannot be triggered from outside "
-                  + "the browser by any other means, so nothing can be freed until Chrome is restarted with the "
-                  + "debugging switches.\n\nRestart Chrome with debugging now?"
-                : "Chrome is not running.\n\nStart it with debugging now?";
-
-            Log($"Trim refused: {reason.Replace("\n", " ")}", LogLevel.Warning);
-
-            if (automatic)
-            {
-                return;
-            }
-
-            // Offering the fix here beats a dialog that only restates the problem.
-            DialogResult answer = MessageBox.Show(
-                this, reason, "Nothing to trim", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-            Log($"Nothing-to-trim prompt answered: {answer}", LogLevel.Info);
-
-            if (answer != DialogResult.Yes)
-            {
-                return;
-            }
-
-            await EnableDebuggingAsync(alreadyConfirmed: true);
-
-            if (_activePort is null)
-            {
-                Log("Debugging could not be enabled; the trim is abandoned.", LogLevel.Warning);
-                return;
-            }
+            await DiscoverPortAsync();
         }
 
         _busy = true;
@@ -724,16 +703,40 @@ public sealed class MainForm : Form
 
         try
         {
-            using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-            TrimResult result = await _trimmer.TrimAsync(_activePort!.Value, progress, cts.Token);
+            MemorySnapshot before = MemorySnapshot.Capture();
 
-            ReportResult(result);
+            // Optional: real committed release through V8's own GC, only if a port is present.
+            if (_activePort is not null)
+            {
+                using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+                TrimResult gc = await _trimmer.TrimAsync(_activePort.Value, progress, cts.Token);
+
+                if (!gc.Succeeded)
+                {
+                    _activePort = null;
+                }
+            }
+
+            // Always: empty every Chrome process's working set. No port, no restart. This is the drop
+            // Task Manager shows, and it frees physical RAM for the rest of the machine right away.
+            int emptied = MemorySnapshot.EmptyAllChromeWorkingSets();
+            Log($"Working set emptied on {emptied} Chrome processes.", LogLevel.Info);
+
+            await Task.Delay(700);
+
+            MemorySnapshot after = MemorySnapshot.Capture();
+            double freedMb = before.WorkingSetMb - after.WorkingSetMb;
+
+            Log($"Trim done. Chrome working set {before.WorkingSetMb:N0} -> {after.WorkingSetMb:N0} MB "
+                + $"({freedMb:+#,##0;-#,##0;0} MB) across {after.ProcessCount} processes.", LogLevel.Info);
+
             RefreshStats();
 
-            if (!result.Succeeded)
+            if (freedMb >= 1)
             {
-                _activePort = null;
-                UpdatePortStatus();
+                _trayIcon.BalloonTipTitle = "Chrome RAM Reducer";
+                _trayIcon.BalloonTipText = $"{freedMb:N0} MB freed from Chrome's working set.";
+                _trayIcon.ShowBalloonTip(3000);
             }
         }
         catch (OperationCanceledException)
